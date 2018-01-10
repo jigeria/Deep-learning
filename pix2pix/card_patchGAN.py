@@ -4,12 +4,14 @@ os.environ['THEANO_FLAGS']='floatX=float32,device=cuda,optimizer=fast_run,dnn.li
 
 import keras.backend as K
 K.set_image_data_format('channels_last')
+K.set_image_dim_ordering('tf')
+
 channel_axis = -1
 
 from keras.models import Sequential, Model
 from keras.layers import Conv2D, ZeroPadding2D, BatchNormalization, Input, Dropout
 from keras.layers import Conv2DTranspose, Reshape, Activation, Cropping2D, Flatten
-from keras.layers import Concatenate, Dense, merge, Lambda
+from keras.layers import Concatenate, Dense, merge, Lambda, InputLayer
 from keras.layers.advanced_activations import LeakyReLU
 from keras.activations import relu
 from keras.initializers import RandomNormal
@@ -41,7 +43,6 @@ def batchnorm():
     return BatchNormalization(momentum=0.9, axis=channel_axis, epsilon=1.01e-5,
                               gamma_initializer=gamma_init)
 
-
 def num_patches(output_img_dim=(256, 256, 3), sub_patch_dim=(64, 64)):
     """
     Creates non-overlaping patches to feed to the PATCH GAN
@@ -55,7 +56,6 @@ def num_patches(output_img_dim=(256, 256, 3), sub_patch_dim=(64, 64)):
     :param sub_patch_dim:
     :return:
     """
-
     # num of non-overlaping patches
     nb_non_overlaping_patches = (output_img_dim[0] / sub_patch_dim[0]) * (output_img_dim[1] / sub_patch_dim[1])
 
@@ -63,167 +63,11 @@ def num_patches(output_img_dim=(256, 256, 3), sub_patch_dim=(64, 64)):
     patch_disc_img_dim = (sub_patch_dim[0], sub_patch_dim[1], output_img_dim[2])
 
     return int(nb_non_overlaping_patches), patch_disc_img_dim
-'''
-def BASIC_D(nc_in, nc_out, ndf, max_layers=3):
-    """DCGAN_D(nc, ndf, max_layers=3)
-       nc: channels
-       ndf: filters of the first layer
-       max_layers: max hidden layers
-    """
-    input_a, input_b =  Input(shape=(None, None, nc_in)), Input(shape=(None, None, nc_out))
-
-    _ = Concatenate(axis=channel_axis)([input_a, input_b])
-    _ = conv2d(ndf, kernel_size=4, strides=2, padding="same", name='First')(_)
-    _ = LeakyReLU(alpha=0.2)(_)
-
-    for layer in range(1, max_layers):
-        out_feat = ndf * min(2 ** layer, 8)
-        _ = conv2d(out_feat, kernel_size=4, strides=2, padding="same",
-                   use_bias=False, name='pyramid.{0}'.format(layer)
-                   )(_)
-        _ = batchnorm()(_, training=1)
-        _ = LeakyReLU(alpha=0.2)(_)
-
-    out_feat = ndf * min(2 ** max_layers, 8)
-    _ = ZeroPadding2D(1)(_)
-    _ = conv2d(out_feat, kernel_size=4, use_bias=False, name='pyramid_last')(_)
-    _ = batchnorm()(_, training=1)
-    _ = LeakyReLU(alpha=0.2)(_)
-
-    # final layer
-    # _ = ZeroPadding2D(1)(_)
-    #_ = conv2d(1, kernel_size=4, name='final'.format(out_feat, 1),activation="sigmoid")(_)
-
-    im_width = im_height = 256
-    output_channels = 1
-    output_img_dim = (im_width, im_height, output_channels)
-
-    sub_patch_dim = (256, 256)
-    nb_patch_patches, patch_gan_dim = num_patches(output_img_dim=output_img_dim, sub_patch_dim=sub_patch_dim)
-
-    patch_gan_discriminator = generate_patch_gan_loss(last_disc_conv_layer=_,
-                                                      patch_dim=patch_gan_dim,
-                                                      input_a=input_a,
-                                                      input_b=input_b,
-                                                      nb_patches=nb_patch_patches,
-                                                      out_feat=out_feat)
-    #return patch_gan_discriminator
-
-    return Model(inputs=[input_a, input_b], outputs=_)
-'''
-
-def BASIC_D(nc_in, nc_out, ndf, max_layers=3):
-    """DCGAN_D(nc, ndf, max_layers=3)
-       nc: channels
-       ndf: filters of the first layer
-       max_layers: max hidden layers
-    """
-    input_a, input_b = Input(shape=(None, None, nc_in)), Input(shape=(None, None, nc_out))
-
-    _ = Concatenate(axis=channel_axis)([input_a, input_b])
-    _ = conv2d(ndf, kernel_size=4, strides=2, padding="same", name='First')(_)
-    _ = LeakyReLU(alpha=0.2)(_)
-
-    for layer in range(1, max_layers):
-        out_feat = ndf * min(2 ** layer, 8)
-        _ = conv2d(out_feat, kernel_size=4, strides=2, padding="same",
-                   use_bias=False, name='pyramid.{0}'.format(layer)
-                   )(_)
-        _ = batchnorm()(_, training=1)
-        _ = LeakyReLU(alpha=0.2)(_)
-
-    out_feat = ndf * min(2 ** max_layers, 8)
-    _ = ZeroPadding2D(1)(_)
-    _ = conv2d(out_feat, kernel_size=4, use_bias=False, name='pyramid_last')(_)
-    _ = batchnorm()(_, training=1)
-    _ = LeakyReLU(alpha=0.2)(_)
-
-    # final layer
-    _ = ZeroPadding2D(1)(_)
-    _ = conv2d(1, kernel_size=4, name='final'.format(out_feat, 1),
-               activation="sigmoid")(_)
-
-    im_width = im_height = 256
-    output_channels = 1
-    output_img_dim = (im_width, im_height, output_channels)
-
-    sub_patch_dim = (256, 256)
-    nb_patches, patch_dim = num_patches(output_img_dim=output_img_dim, sub_patch_dim=sub_patch_dim)
-
-    input_layer = Concatenate(axis=channel_axis)([input_a, input_b])
-
-    # generate a list of inputs for the different patches to the network
-    list_input = [Input(shape=patch_dim, name="patch_gan_input_%s" % i) for i in range(nb_patches)]
-
-    # get an activation
-    x_flat = Flatten()(_)
-    x = Dense(2, activation='softmax', name="disc_dense")(x_flat)
-
-    patch_gan = Model(input=[input_layer], output=[x, x_flat], name="patch_gan")
-
-    # generate individual losses for each patch
-    x = [patch_gan(patch)[0] for patch in list_input]
-    x_mbd = [patch_gan(patch)[1] for patch in list_input]
-
-    # merge layers if have multiple patches (aka perceptual loss)
-    if len(x) > 1:
-        x = merge(x, mode="concat", name="merged_features")
-    else:
-        x = x[0]
-
-    # merge mbd if needed
-    # mbd = mini batch discrimination
-    # https://arxiv.org/pdf/1606.03498.pdf
-    if len(x_mbd) > 1:
-        x_mbd = merge(x_mbd, mode="concat", name="merged_feature_mbd")
-    else:
-        x_mbd = x_mbd[0]
-
-    num_kernels = 100
-    dim_per_kernel = 5
-
-    M = Dense(num_kernels * dim_per_kernel, bias=False, activation=None)
-    MBD = Lambda(minb_disc, output_shape=lambda_output)
-
-    x_mbd = M(x_mbd)
-    x_mbd = Reshape((num_kernels, dim_per_kernel))(x_mbd)
-    x_mbd = MBD(x_mbd)
-    x = merge([x, x_mbd], mode='concat')
-
-    x_out = Dense(2, activation="softmax", name="disc_output")(x)
-
-    discriminator = Model(input=list_input, output=[x_out], name='discriminator_nn')
-
-    return discriminator
-
-    '''
-    patch_gan_discriminator = generate_patch_gan_loss(last_disc_conv_layer=_,
-                                                      patch_dim=patch_gan_dim,
-                                                      input_a=input_a,
-                                                      input_b=input_b,
-                                                      nb_patches=nb_patch_patches)
-    
-    return patch_gan_discriminator
-    '''
-    #return Model(inputs=[input_a, input_b], outputs=_)
-
-
-'''
-    patch_gan_discriminator = generate_patch_gan_loss(last_disc_conv_layer=_,
-                                                      patch_dim=patch_gan_dim,
-                                                      input_a=input_a,
-                                                      input_b=input_b,
-                                                      nb_patches=nb_patch_patches,
-                                                      out_feat=out_feat)
-    # return patch_gan_discriminator
-'''
-
-
 
 def generate_patch_gan_loss(last_disc_conv_layer, patch_dim, input_a, input_b, nb_patches):
 
+    #input_layer = InputLayer(input_shape=(256, 256, 3), input_tensor=input_a)
     input_layer = Concatenate(axis=channel_axis)([input_a, input_b])
-
     # generate a list of inputs for the different patches to the network
     list_input = [Input(shape=patch_dim, name="patch_gan_input_%s" % i) for i in range(nb_patches)]
 
@@ -265,12 +109,10 @@ def generate_patch_gan_loss(last_disc_conv_layer, patch_dim, input_a, input_b, n
     x_out = Dense(2, activation="softmax", name="disc_output")(x)
 
     discriminator = Model(input=list_input, output=[x_out], name='discriminator_nn')
-
     return discriminator
 
 def lambda_output(input_shape):
     return input_shape[:2]
-
 
 def minb_disc(x):
     diffs = K.expand_dims(x, 3) - K.expand_dims(K.permute_dimensions(x, [1, 2, 0]), 0)
@@ -279,6 +121,64 @@ def minb_disc(x):
 
     return x
 
+def BASIC_D(nc_in, nc_out, ndf, max_layers=3):
+    """DCGAN_D(nc, ndf, max_layers=3)
+       nc: channels
+       ndf: filters of the first layer
+       max_layers: max hidden layers
+    """
+    input_a, input_b = Input(shape=(256, 256, nc_in)), Input(shape=(256, 256, nc_out))
+
+    _ = Concatenate(axis=channel_axis)([input_a, input_b])
+    _ = conv2d(ndf, kernel_size=4, strides=2, padding="same", name='First')(_)
+    _ = LeakyReLU(alpha=0.2)(_)
+
+    for layer in range(1, max_layers):
+        out_feat = ndf * min(2 ** layer, 8)
+        _ = conv2d(out_feat, kernel_size=4, strides=2, padding="same",
+                   use_bias=False, name='pyramid.{0}'.format(layer)
+                   )(_)
+        _ = batchnorm()(_, training=1)
+        _ = LeakyReLU(alpha=0.2)(_)
+
+    out_feat = ndf * min(2 ** max_layers, 8)
+    _ = ZeroPadding2D(1)(_)
+    _ = conv2d(out_feat, kernel_size=4, use_bias=False, name='pyramid_last')(_)
+    _ = batchnorm()(_, training=1)
+    _ = LeakyReLU(alpha=0.2)(_)
+
+
+    # final layer
+    _ = ZeroPadding2D(1)(_)
+    _ = conv2d(1, kernel_size=4, name='final'.format(out_feat, 1),
+               activation="sigmoid")(_)
+
+    im_width = im_height = 256
+
+    # inpu/oputputt channels in image
+    input_channels = 1
+    output_channels = 1
+
+    # image dims
+    input_img_dim = (input_channels, im_width, im_height)
+    output_img_dim = (output_channels, im_width, im_height)
+
+    # We're using PatchGAN setup, so we need the num of non-overlaping patches
+    # this is how big we'll make the patches for the discriminator
+    # for example. We can break up a 256x256 image in 16 patches of 64x64 each
+    sub_patch_dim = (256, 256)
+    nb_patches, patch_dim = num_patches(output_img_dim=output_img_dim, sub_patch_dim=sub_patch_dim)
+
+    return Model(inputs=[input_a, input_b], outputs=_)
+
+'''
+    patch_gan_discriminator = generate_patch_gan_loss(last_disc_conv_layer=_,
+                                                      patch_dim=patch_dim,
+                                                      input_a=input_a,
+                                                      input_b=input_b,
+                                                      nb_patches=nb_patches)
+    return patch_gan_discriminator
+'''
 
 
 def UNET_G(isize, nc_in=3, nc_out=3, ngf=64, fixed_input_size=True):
@@ -404,6 +304,39 @@ def minibatch(dataAB, batchsize, direction=0):
         i += size
         tmpsize = yield epoch, dataA, dataB
 
+def extract_patches(images, sub_patch_dim):
+    """
+    Cuts images into k subpatche
+    Each kth cut as the kth patches for all images
+    ex: input 3 images [im1, im2, im3]
+    output [[im_1_patch_1, im_2_patch_1], ... , [im_n-1_patch_k, im_n_patch_k]]
+    :param images: array of Images (num_images, im_channels, im_height, im_width)
+    :param sub_patch_dim: (height, width) ex: (30, 30) Subpatch dimensions
+    :return:
+    """
+    im_height, im_width = images.shape[1:3]
+    patch_height, patch_width = sub_patch_dim
+
+    # list out all xs  ex: 0, 29, 58, ...
+    x_spots = range(0, im_width, patch_width)
+
+    # list out all ys ex: 0, 29, 58
+    y_spots = range(0, im_height, patch_height)
+    all_patches = []
+
+    print("start patch")
+    for y in y_spots:
+        for x in x_spots:
+            # indexing here is cra
+            # images[num_images, num_channels, width, height]
+            # this says, cut a patch across all images at the same time with this width, height
+            image_patches = images[:, y: y+patch_height, x: x+patch_width, :]
+            all_patches.append(np.asarray(image_patches, dtype=np.float32))
+
+    #print(all_patches)
+
+    return all_patches
+
 from IPython.display import display
 
 def showX(X, rows=1):
@@ -415,11 +348,38 @@ def showX(X, rows=1):
 
     display(Image.fromarray(int_X))
 
-
 train_batch = minibatch(trainAB, 6, direction=direction)
 _, trainA, trainB = next(train_batch)
 showX(trainA)
 showX(trainB)
+
+train_a_patch = extract_patches(trainA, sub_patch_dim=(32, 32))
+train_b_patch = extract_patches(trainB, sub_patch_dim=(32, 32))
+
+print("train a patch")
+print(train_a_patch[0][0])
+
+print("train b patch")
+print(train_b_patch[0][0])
+
+patch_dir_A = './cards_ab/cards_ab/patch_image/A/'
+patch_dir_B = './cards_ab/cards_ab/patch_image/B/'
+count = 0
+
+for batch in range(0,len(train_a_patch)):
+    for num in range(0,6):
+        patch_path_a = patch_dir_A + 'A' + str(batch) + '_' + str(count) + '.jpg'
+        patch_path_b = patch_dir_B + 'B' + str(batch) + '_' + str(count) + '.jpg'
+        count = count+1
+
+        p_img_a = ((train_a_patch[batch][num]+1)/2.0*255).clip(0,255).astype('uint8')
+        p_img_b = ((train_b_patch[batch][num] + 1) / 2.0 * 255).clip(0, 255).astype('uint8')
+
+        patch_image_a = Image.fromarray(p_img_a)
+        patch_image_b = Image.fromarray(p_img_b)
+        patch_image_a.save(patch_path_a, quality=90)
+        patch_image_b.save(patch_path_b, quality=90)
+
 del train_batch, trainA, trainB
 
 def netG_gen(A):
@@ -440,7 +400,15 @@ train_batch = minibatch(trainAB, batchSize, direction)
 
 while epoch < niter:
     epoch, trainA, trainB = next(train_batch)
+    print("Print trainA B")
+    print(trainA[0][0])
+    print(trainB[0][0])
+
+    patch_a = extract_patches(trainA, sub_patch_dim=[32, 32])
+    patch_b = extract_patches(trainB, sub_patch_dim=[32, 32])
+
     errD, = netD_train([trainA, trainB])
+    #errD, = netD_train([patch_a, patch_b])
     errD_sum += errD
 
     errG, errL1 = netG_train([trainA, trainB])
@@ -485,6 +453,7 @@ def read_single_image(fn):
 max_idx = 636
 src_dir = './cards_ab/cards_ab/test_in/'
 dst_dir = './cards_ab/cards_ab/test_out/'
+
 
 for idx in range(max_idx + 1):
     data = []
