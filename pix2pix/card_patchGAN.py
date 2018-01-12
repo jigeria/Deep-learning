@@ -4,16 +4,13 @@ os.environ['THEANO_FLAGS']='floatX=float32,device=cuda,optimizer=fast_run,dnn.li
 
 import keras.backend as K
 K.set_image_data_format('channels_last')
-K.set_image_dim_ordering('tf')
-
 channel_axis = -1
 
 from keras.models import Sequential, Model
 from keras.layers import Conv2D, ZeroPadding2D, BatchNormalization, Input, Dropout
 from keras.layers import Conv2DTranspose, Reshape, Activation, Cropping2D, Flatten
-from keras.layers import Concatenate, Dense, merge, InputLayer
+from keras.layers import Concatenate
 from keras.layers.advanced_activations import LeakyReLU
-from keras.layers.core import Lambda
 from keras.activations import relu
 from keras.initializers import RandomNormal
 from IPython.display import SVG
@@ -44,11 +41,7 @@ def batchnorm():
     return BatchNormalization(momentum=0.9, axis=channel_axis, epsilon=1.01e-5,
                               gamma_initializer=gamma_init)
 
-def tensor_mean(A):
-    sum_tensor = 0
-    for t in A:
-        sum_tensor += t
-    return (sum_tensor/len(A))
+
 
 def make_patch_Tensor(A):
     patch_list = []
@@ -57,127 +50,13 @@ def make_patch_Tensor(A):
 
     return patch_list
 
-def extract_patches(images, sub_patch_dim):
-    """
-    Cuts images into k subpatche
-    Each kth cut as the kth patches for all images
-    ex: input 3 images [im1, im2, im3]
-    output [[im_1_patch_1, im_2_patch_1], ... , [im_n-1_patch_k, im_n_patch_k]]
-    :param images: array of Images (num_images, im_channels, im_height, im_width)
-    :param sub_patch_dim: (height, width) ex: (30, 30) Subpatch dimensions
-    :return:
-    """
-    im_height, im_width = images.shape[1:3]
-    patch_height, patch_width = sub_patch_dim
 
-    # list out all xs  ex: 0, 29, 58, ...
-    x_spots = range(0, im_width, patch_width)
+def tensor_mean(A):
+    sum_tensor = 0
+    for t in A:
+        sum_tensor += t
+    return (sum_tensor/len(A))
 
-    # list out all ys ex: 0, 29, 58
-    y_spots = range(0, im_height, patch_height)
-    all_patches = []
-
-    print("start patch")
-    for y in y_spots:
-        for x in x_spots:
-            # indexing here is cra
-            # images[num_images, num_channels, width, height]
-            # this says, cut a patch across all images at the same time with this width, height
-            image_patches = images[:, y: y+patch_height, x: x+patch_width, :]
-            all_patches.append(np.asarray(image_patches, dtype=np.float32))
-
-    #print(all_patches)
-
-    return all_patches
-
-def num_patches(output_img_dim=(256, 256, 3), sub_patch_dim=(64, 64)):
-    """
-    Creates non-overlaping patches to feed to the PATCH GAN
-    (Section 2.2.2 in paper)
-    The paper provides 3 options.
-    Pixel GAN = 1x1 patches (aka each pixel)
-    PatchGAN = nxn patches (non-overlaping blocks of the image)
-    ImageGAN = im_size x im_size (full image)
-    Ex: 4x4 image with patch_size of 2 means 4 non-overlaping patches
-    :param output_img_dim:
-    :param sub_patch_dim:
-    :return:
-    """
-    # num of non-overlaping patches
-    nb_non_overlaping_patches = (output_img_dim[0] / sub_patch_dim[0]) * (output_img_dim[1] / sub_patch_dim[1])
-
-    # dimensions for the patch discriminator
-    patch_disc_img_dim = (sub_patch_dim[0], sub_patch_dim[1], output_img_dim[2])
-
-    return int(nb_non_overlaping_patches), patch_disc_img_dim
-
-def generate_patch_gan_loss(last_disc_conv_layer, patch_dim, input_layer, nb_patches):
-    # generate a list of inputs for the different patches to the network
-    list_input_A = [Input(shape=patch_dim, name="patch_gan_input_%s" % i) for i in range(nb_patches)]
-    list_input_B = [Input(shape=patch_dim, name="patch_gan_input_%s" % i) for i in range(nb_patches)]
-
-    concat_list = []
-
-    for a, b in zip(list_input_A, list_input_B):
-        concat_list.append(Concatenate(axis=channel_axis)([a, b]))
-        print(Concatenate(axis=channel_axis)([a, b]).shape)
-
-    # get an activation
-    x_flat = Flatten()(last_disc_conv_layer)
-    x = Dense(2, activation='softmax', name="disc_dense")(x_flat)
-    print(x.shape)
-    patch_gan = Model(input=input_layer, output=[x, x_flat], name="patch_gan")
-
-    # generate individual losses for each patch
-    x = [patch_gan(patch)[0] for patch in concat_list]
-    x_mbd = [patch_gan(patch)[1] for patch in concat_list]
-
-    # merge layers if have multiple patches (aka perceptual loss)
-    if len(x) > 1:
-        x = merge(x, mode="concat", name="merged_features")
-    else:
-        x = x[0]
-
-    # merge mbd if needed
-    # mbd = mini batch discrimination
-    # https://arxiv.org/pdf/1606.03498.pdf
-    if len(x_mbd) > 1:
-        x_mbd = merge(x_mbd, mode="concat", name="merged_feature_mbd")
-    else:
-        x_mbd = x_mbd[0]
-
-    num_kernels = 100
-    dim_per_kernel = 5
-
-    M = Dense(num_kernels * dim_per_kernel, bias=False, activation=None)
-    MBD = Lambda(minb_disc, output_shape=lambda_output)
-
-    x_mbd = M(x_mbd)
-    x_mbd = Reshape((num_kernels, dim_per_kernel))(x_mbd)
-    x_mbd = MBD(x_mbd)
-    x = merge([x, x_mbd], mode='concat')
-
-    x_out = Dense(2, activation="softmax", name="disc_output")(x)
-
-    #list_input_A = tuple(list_input_A)
-    #list_input_B = tuple(list_input_B)
-
-    #list_input_A = Lambda(list_input_A, output_shape=(256, 256, 3))
-    #list_input_B = Lambda(list_input_B, output_shape=(256, 256, 3))
-
-    #discriminator = Model(input=[list_input_A, list_input_B], output=[x_out], name='discriminator_nn')
-
-    return x_out
-
-def lambda_output(input_shape):
-    return input_shape[:2]
-
-def minb_disc(x):
-    diffs = K.expand_dims(x, 3) - K.expand_dims(K.permute_dimensions(x, [1, 2, 0]), 0)
-    abs_diffs = K.sum(K.abs(diffs), 2)
-    x = K.sum(K.exp(-abs_diffs), 2)
-
-    return x
 
 def BASIC_D(nc_in, nc_out, ndf, max_layers=3):
     """DCGAN_D(nc, ndf, max_layers=3)
@@ -211,20 +90,6 @@ def BASIC_D(nc_in, nc_out, ndf, max_layers=3):
                activation="sigmoid")(_)
 
     return Model(inputs=[input_a, input_b], outputs=_)
-
-
-    '''
-    nb_patch_patches, patch_gan_dim = num_patches(output_img_dim=(256, 256, 3), sub_patch_dim=(64, 64))
-
-    print("nb_patch_patches, patch_gan_dim:" + str(nb_patch_patches), str(patch_gan_dim))
-
-    patch_gan_discriminator = generate_patch_gan_loss(last_disc_conv_layer=_,
-                                                      patch_dim=patch_gan_dim,
-                                                     input_layer=input_a,
-                                                     nb_patches=nb_patch_patches)
-
-    return patch_gan_discriminator
-'''
 
 def UNET_G(isize, nc_in=3, nc_out=3, ngf=64, fixed_input_size=True):
     max_nf = 8 * ngf
@@ -300,20 +165,8 @@ output_D_fake = [netD([a, b]) for a,b in zip(real_A_patches,fake_B_patches)]
 
 output_D_real = tensor_mean(output_D_real)
 output_D_fake = tensor_mean(output_D_fake)
-
-'''
-real_A = netG.input
-fake_B = netG.output
-
-real_A_patch = netD.input[0]
-real_B_patch = netD.input[1]
-fake_B_patch = netG.output
-
-netG_generate = K.function([real_A], [fake_B])
-real_B = netD.inputs[1]
-output_D_real = netD([real_A, real_B]) #coditional GAN
-output_D_fake = netD([real_A, fake_B]) #coditional GAN
-'''
+print(K.shape(real_A))
+print(K.shape(real_B))
 
 loss_fn = lambda output, target : -K.mean(K.log(output+1e-12)*target+K.log(1-output+1e-12)*(1-target))
 
@@ -329,7 +182,6 @@ netD_train = K.function([real_A, real_B], [loss_D / 2.0], training_updates)
 loss_G = loss_G_fake + 100 * loss_L1
 training_updates = Adam(lr=lrG, beta_1=0.5).get_updates(netG.trainable_weights, [], loss_G)
 netG_train = K.function([real_A, real_B], [loss_G_fake, loss_L1], training_updates)
-
 
 def load_data(file_pattern):
     return glob.glob(file_pattern)
@@ -370,14 +222,21 @@ def minibatch(dataAB, batchsize, direction=0):
         dataB = []
         for j in range(i, i + size):
             imgA, imgB = read_image(dataAB[j], direction)
+
             dataA.append(imgA)
             dataB.append(imgB)
+
+        #print(dataA, dataB)
+        #print(dataAB)
+        #print(direction)
+
         dataA = np.float32(dataA)
         dataB = np.float32(dataB)
         i += size
         tmpsize = yield epoch, dataA, dataB
 
 from IPython.display import display
+
 
 def showX(X, rows=1):
     assert X.shape[0] % rows == 0
@@ -388,33 +247,12 @@ def showX(X, rows=1):
 
     display(Image.fromarray(int_X))
 
+
 train_batch = minibatch(trainAB, 6, direction=direction)
 _, trainA, trainB = next(train_batch)
 showX(trainA)
 showX(trainB)
-
-train_a_patch = extract_patches(trainA, sub_patch_dim=(64, 64))
-train_b_patch = extract_patches(trainB, sub_patch_dim=(64, 64))
-
-patch_dir_A = './cards_ab/cards_ab/patch_image/A/'
-patch_dir_B = './cards_ab/cards_ab/patch_image/B/'
-count = 0
-
-for batch in range(0, len(train_a_patch)):
-    for num in range(0, 6):
-        patch_path_a = patch_dir_A + 'A' + str(batch) + '_' + str(count) + '.jpg'
-        patch_path_b = patch_dir_B + 'B' + str(batch) + '_' + str(count) + '.jpg'
-        count = count + 1
-
-        p_img_a = ((train_a_patch[batch][num] + 1) / 2.0 * 255).clip(0, 255).astype('uint8')
-        p_img_b = ((train_b_patch[batch][num] + 1) / 2.0 * 255).clip(0, 255).astype('uint8')
-
-        patch_image_a = Image.fromarray(p_img_a)
-        patch_image_b = Image.fromarray(p_img_b)
-        patch_image_a.save(patch_path_a, quality=90)
-        patch_image_b.save(patch_path_b, quality=90)
-
-del train_batch, trainA, trainB, train_a_patch, train_b_patch, patch_image_a, patch_image_b
+del train_batch, trainA, trainB
 
 def netG_gen(A):
     return np.concatenate([netG_generate([A[i:i + 1]])[0] for i in range(A.shape[0])], axis=0)
@@ -423,7 +261,7 @@ import time
 from IPython.display import clear_output
 
 t0 = time.time()
-niter = 1
+niter = 10
 gen_iterations = 0
 errL1 = epoch = errG = 0
 errL1_sum = errG_sum = errD_sum = 0
@@ -434,10 +272,6 @@ train_batch = minibatch(trainAB, batchSize, direction)
 
 while epoch < niter:
     epoch, trainA, trainB = next(train_batch)
-
-    #train_a_patch = extract_patches(trainA, sub_patch_dim=(64, 64))
-    #train_b_patch = extract_patches(trainB, sub_patch_dim=(64, 64))
-
     errD, = netD_train([trainA, trainB])
     errD_sum += errD
 
@@ -466,6 +300,7 @@ _, valA, valB = next(val_batch)
 fakeB = netG_gen(valA)
 showX(np.concatenate([valA, valB, fakeB], axis=0), 3)
 
+
 def read_single_image(fn):
     im = Image.open(fn)
     im = im.resize((loadSize, loadSize), Image.BILINEAR)
@@ -482,7 +317,6 @@ def read_single_image(fn):
 max_idx = 636
 src_dir = './cards_ab/cards_ab/test_in/'
 dst_dir = './cards_ab/cards_ab/test_out/'
-
 
 for idx in range(max_idx + 1):
     data = []
